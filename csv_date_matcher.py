@@ -38,4 +38,3 @@ try:
 
 except pd.errors.ParserError as e:
     print(f"Parser Error: {e}")
-    # Examine the error message to identify the problematic lines.

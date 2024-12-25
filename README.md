@@ -24,23 +24,28 @@ This project implements a sophisticated cryptocurrency price prediction system t
 - matplotlib
 - seaborn
 
-### Setup
-1. Clone the repository:
+
+## Installation and Setup
+
+### 1. Clone Repository
+Clone the repository and navigate to the project directory:
 ```bash
 git clone https://github.com/yourusername/crypto-prediction.git
 cd crypto-prediction
 
-Install dependencies:
+## 2.Installation dependencies:
 
 bashCopypip install -r requirements.txt
 
-Download required NLTK data:
+## 3.Download required NLTK data:
+Run the following Python commands to download required NLTK datasets:
 
 pythonCopyimport nltk
 nltk.download('punkt')
 nltk.download('stopwords')
 nltk.download('wordnet')
-Project Structure
+
+##Project Structure
 Copycrypto-prediction/
 ├── data/                      # Data directory
 ├── models/                    # Saved models
@@ -59,7 +64,8 @@ Copycrypto-prediction/
 ├── config.json               # Configuration file
 ├── requirements.txt
 └── README.md
-Usage
+
+##Usage
 Configuration
 Before running the pipeline, configure the parameters in config.json:
 jsonCopy{

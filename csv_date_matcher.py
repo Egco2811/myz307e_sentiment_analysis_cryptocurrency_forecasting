@@ -1,40 +1,103 @@
 import pandas as pd
 import re
+from datetime import datetime
+import numpy as np
 
-bitcoin_df = pd.read_csv("bitcoin.csv", parse_dates=["Date"], date_format="%Y-%m-%d")
+class DataMatcher:
+    def __init__(self, bitcoin_file, tweets_file):
+        self.bitcoin_file = bitcoin_file
+        self.tweets_file = tweets_file
+        
+    def load_bitcoin_data(self):
+        """
+        Load and preprocess Bitcoin price data
+        """
+        bitcoin_df = pd.read_csv(
+            self.bitcoin_file,
+            parse_dates=["Date"],
+            date_format="%Y-%m-%d"
+        )
+        
+        # Calculate daily returns
+        bitcoin_df['returns'] = bitcoin_df['Close'].pct_change()
+        
+        # Add volatility measure
+        bitcoin_df['volatility'] = bitcoin_df['returns'].rolling(window=30).std()
+        
+        return bitcoin_df
+    
+    def process_tweets_chunk(self, chunk, bitcoin_df):
+        """
+        Process a chunk of tweets and merge with Bitcoin data
+        """
+        # Convert tweet dates to datetime
+        chunk["Date"] = pd.to_datetime(
+            chunk[self.tweets_date_col].str.split().str[0],
+            format="%Y-%m-%d",
+            errors="coerce"
+        )
+        
+        # Group tweets by date and calculate daily sentiment statistics
+        daily_sentiment = chunk.groupby("Date")['sentiment'].agg([
+            'mean',
+            'count',
+            'std'
+        ]).reset_index()
+        
+        # Merge with bitcoin data
+        merged_chunk = pd.merge(
+            bitcoin_df,
+            daily_sentiment,
+            on="Date",
+            how="inner"
+        )
+        
+        return merged_chunk
 
-try:
-    tweets_df_iter = pd.read_csv(
-        "tweets.csv", iterator=True, chunksize=5000, on_bad_lines="error", encoding="utf-8", engine="python", low_memory=True
-    )
-    tweets_chunk_sample = next(tweets_df_iter)
-    tweets_df_iter = pd.read_csv(
-        "tweets.csv", iterator=True, chunksize=5000, on_bad_lines="error", encoding="utf-8", engine="python", low_memory=True
-    )
-    tweets_date_col = tweets_chunk_sample.columns[8]
-    tweets_cols = tweets_chunk_sample.columns.tolist()
-    bitcoin_cols = bitcoin_df.columns.tolist()
-
-    with open("filtered_bitcoin.csv", "w", newline="", encoding="utf-8") as bitcoin_out, open("filtered_tweets.csv", "w", newline="", encoding="utf-8") as tweets_out:
-        bitcoin_header = ",".join(bitcoin_cols)
-        tweets_header = ",".join(tweets_cols)
-        bitcoin_out.write(bitcoin_header + "\n")
-        tweets_out.write(tweets_header + "\n")
-
-        for tweets_chunk in tweets_df_iter:
-            tweets_chunk["Date"] = pd.to_datetime(tweets_chunk[tweets_date_col].str.split().str[0], format="%Y-%m-%d", errors="coerce")
-            merged_chunk = pd.merge(bitcoin_df, tweets_chunk, on="Date", how="inner")
-
+    def process_data(self):
+        """
+        Process entire dataset
+        """
+        bitcoin_df = self.load_bitcoin_data()
+        
+        tweets_df_iter = pd.read_csv(
+            self.tweets_file,
+            iterator=True,
+            chunksize=5000,
+            on_bad_lines="error",
+            encoding="utf-8",
+            engine="python",
+            low_memory=True
+        )
+        
+        # Process first chunk to get column names
+        tweets_chunk_sample = next(tweets_df_iter)
+        self.tweets_date_col = tweets_chunk_sample.columns[8]
+        
+        # Reset iterator
+        tweets_df_iter = pd.read_csv(
+            self.tweets_file,
+            iterator=True,
+            chunksize=5000,
+            on_bad_lines="error",
+            encoding="utf-8",
+            engine="python",
+            low_memory=True
+        )
+        
+        merged_chunks = []
+        for chunk in tweets_df_iter:
+            merged_chunk = self.process_tweets_chunk(chunk, bitcoin_df)
             if not merged_chunk.empty:
-                bitcoin_df_chunk = merged_chunk[bitcoin_cols]
-                tweets_df_chunk = merged_chunk[tweets_cols]
+                merged_chunks.append(merged_chunk)
+        
+        # Combine all chunks
+        final_df = pd.concat(merged_chunks)
+        
+        # Save processed data
+        final_df.to_csv("merged_data.csv", index=False)
+        print("Data processing complete. Results saved to merged_data.csv")
 
-                for col in tweets_df_chunk.columns:
-                    if tweets_df_chunk[col].dtype == 'object':
-                        tweets_df_chunk[col] = tweets_df_chunk[col].astype(str).apply(lambda x: re.sub(r'[^\x00-\x7F]+', '', x))
-
-                bitcoin_df_chunk.to_csv(bitcoin_out, header=False, index=False, encoding="utf-8")
-                tweets_df_chunk.to_csv(tweets_out, header=False, index=False, encoding="utf-8")
-
-except pd.errors.ParserError as e:
-    print(f"Parser Error: {e}")
+if __name__ == "__main__":
+    matcher = DataMatcher("bitcoin.csv", "processed_tweets.csv")
+    matcher.process_data()

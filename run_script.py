@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 from datetime import datetime
 import pandas as pd
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from tweets_preprocessing import TweetPreprocessor
 from tweet_labeler import SentimentAnalyzer  

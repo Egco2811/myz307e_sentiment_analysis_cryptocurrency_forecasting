@@ -31,6 +31,7 @@ class TweetPreprocessor:
        
        # Download required NLTK data
        nltk.download('punkt', quiet=True)
+       nltk.download('punkt_tab', quiet=True)
        nltk.download('stopwords', quiet=True)
        nltk.download('wordnet', quiet=True)
        
@@ -129,8 +130,7 @@ class TweetPreprocessor:
        
        return (
            text_length >= self.config['preprocessing']['min_tweet_length'] and
-           text_length <= self.config['preprocessing']['max_tweet_length'] and
-           tweet.get('lang') == self.config['preprocessing']['language']
+           text_length <= self.config['preprocessing']['max_tweet_length']
        )
 
    def process_tweet_batch(self, tweets: List[Dict]) -> List[Dict]:
@@ -146,7 +146,7 @@ class TweetPreprocessor:
                    processed_tweets.append({
                        'text': tweet['text'],
                        'cleaned_text': cleaned_text,
-                       'created_at': tweet['created_at'],
+                       'created_at': tweet['date'],
                        'bert_encoding': self.prepare_for_bert(cleaned_text)
                    })
        
@@ -154,39 +154,42 @@ class TweetPreprocessor:
 
    def process_tweets_file(self, input_file: str,
                           output_file: str,
-                          batch_size: int = 100) -> None:
-        """
-        Process entire tweets dataset
-        """
-        try:
-            # Read data in chunks
-            chunks = pd.read_csv(
-                input_file,
-                chunksize=batch_size,
-                on_bad_lines='skip'
-            )
-            
-            processed_tweets = []
-            for chunk in tqdm(chunks, desc="Processing tweets"):
-                tweets = chunk.to_dict('records')
-                batch_processed = self.process_tweet_batch(tweets)
-                processed_tweets.extend(batch_processed)
-                
-            # Convert to DataFrame
-            df = pd.DataFrame(processed_tweets)
-            
-            # Save processed data
-            df.to_csv(output_file, index=False)
-            logger.info(
-                f"Processed {len(processed_tweets)} tweets. "
-                f"Results saved to {output_file}"
-            )
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Error processing tweets: {str(e)}")
-            raise
+                          batch_size: int = 10) -> pd.DataFrame:
+       """
+       Process entire tweets dataset
+       """
+       try:
+           # Read data in chunks
+           chunks = pd.read_csv(
+               input_file,
+               chunksize=batch_size,
+               on_bad_lines='skip'
+           )
+           
+           processed_tweets = []
+           total_processed = 0
+           
+           for chunk in tqdm(chunks, desc="Processing tweets"):
+               tweets = chunk.to_dict('records')
+               batch_processed = self.process_tweet_batch(tweets)
+               processed_tweets.extend(batch_processed)
+               total_processed += len(batch_processed)
+               
+           # Convert to DataFrame
+           df = pd.DataFrame(processed_tweets)
+           
+           # Save processed data
+           df.to_csv(output_file, index=False)
+           logger.info(
+               f"Processed {total_processed} tweets. "
+               f"Results saved to {output_file}"
+           )
+           
+           return df
+           
+       except Exception as e:
+           logger.error(f"Error processing tweets: {str(e)}")
+           raise
 
 def main():
     with open('config.json', 'r') as f:

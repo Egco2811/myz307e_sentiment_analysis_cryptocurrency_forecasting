@@ -154,7 +154,7 @@ class TweetPreprocessor:
 
    def process_tweets_file(self, input_file: str,
                           output_file: str,
-                          batch_size: int = 1000) -> None:
+                          batch_size: int = 100) -> None:
         """
         Process entire tweets dataset
         """

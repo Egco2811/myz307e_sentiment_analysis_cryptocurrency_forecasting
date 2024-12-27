@@ -1,0 +1,100 @@
+{
+    "output_directory": "outputs",
+    "raw_data": {
+        "tweets_file": "data/raw/tweets.csv",
+        "price_file": "data/raw/prices.csv",
+        "start_date": "2019-01-01",
+        "end_date": "2022-12-31"
+    },
+    "preprocessing": {
+        "min_tweet_length": 3,
+        "max_tweet_length": 280,
+        "remove_urls": true,
+        "remove_usernames": true,
+        "remove_hashtags": false,
+        "language": "en"
+    },
+    "sentiment_analysis": {
+        "bert_model": "bert-base-uncased",
+        "max_length": 128,
+        "batch_size": 32,
+        "sentiment_thresholds": {
+            "positive": 0.5,
+            "negative": -0.5
+        }
+    },
+    "model": {
+        "sequence_length": 10,
+        "lstm_hidden_size": 128,
+        "num_lstm_layers": 3,
+        "dropout_rate": 0.3,
+        "learning_rate": 2e-5,
+        "batch_size": 32,
+        "num_epochs": 100,
+        "early_stopping_patience": 5
+    },
+    "feature_engineering": {
+        "price_features": {
+            "moving_averages": [7, 14, 30, 50],
+            "rsi_period": 14,
+            "macd_params": {
+                "fast_period": 12,
+                "slow_period": 26,
+                "signal_period": 9
+            },
+            "bollinger_bands": {
+                "window": 20,
+                "num_std": 2
+            }
+        },
+        "sentiment_features": {
+            "rolling_windows": [3, 7, 14, 30],
+            "momentum_periods": [1, 3, 5, 7]
+        }
+    },
+    "trading": {
+        "initial_capital": 100000.0,
+        "risk_per_trade": 0.02,
+        "stop_loss_pct": 0.02,
+        "take_profit_pct": 0.04,
+        "transaction_fee": 0.001,
+        "position_sizing": {
+            "max_position_size": 0.1,
+            "min_position_size": 0.01
+        }
+    },
+    "hyperparameter_tuning": {
+        "n_trials": 100,
+        "timeout": 86400,
+        "cv_folds": 5,
+        "optimization_metric": "validation_loss"
+    },
+    "evaluation": {
+        "test_size": 0.2,
+        "validation_size": 0.2,
+        "metrics": [
+            "mse",
+            "rmse",
+            "mae",
+            "mape",
+            "directional_accuracy"
+        ]
+    },
+    "visualization": {
+        "plot_formats": ["png", "svg"],
+        "dpi": 300,
+        "style": "seaborn",
+        "generate_interactive": true
+    },
+    "logging": {
+        "level": "INFO",
+        "save_path": "logs/execution.log",
+        "rotation": "1 MB"
+    },
+    "system": {
+        "random_seed": 42,
+        "num_workers": 4,
+        "use_gpu": true,
+        "precision": "float32"
+    }
+}

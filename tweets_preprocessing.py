@@ -152,42 +152,42 @@ class TweetPreprocessor:
        
        return processed_tweets
 
-def process_tweets_file(input_file: str,
-                      output_file: str,
-                      config: Dict,
-                      batch_size: int = 1000) -> None:
-   """
-   Process entire tweets dataset
-   """
-   try:
-       processor = TweetPreprocessor(config)
-       
-       # Read data in chunks
-       chunks = pd.read_csv(
-           input_file,
-           chunksize=batch_size,
-           on_bad_lines='skip'
-       )
-       
-       processed_tweets = []
-       for chunk in tqdm(chunks, desc="Processing tweets"):
-           tweets = chunk.to_dict('records')
-           batch_processed = processor.process_tweet_batch(tweets)
-           processed_tweets.extend(batch_processed)
-           
-       # Convert to DataFrame
-       df = pd.DataFrame(processed_tweets)
-       
-       # Save processed data
-       df.to_csv(output_file, index=False)
-       logger.info(
-           f"Processed {len(processed_tweets)} tweets. "
-           f"Results saved to {output_file}"
-       )
-       
-   except Exception as e:
-       logger.error(f"Error processing tweets: {str(e)}")
-       raise
+   def process_tweets_file(input_file: str,
+                        output_file: str,
+                        config: Dict,
+                        batch_size: int = 1000) -> None:
+    """
+    Process entire tweets dataset
+    """
+    try:
+        processor = TweetPreprocessor(config)
+        
+        # Read data in chunks
+        chunks = pd.read_csv(
+            input_file,
+            chunksize=batch_size,
+            on_bad_lines='skip'
+        )
+        
+        processed_tweets = []
+        for chunk in tqdm(chunks, desc="Processing tweets"):
+            tweets = chunk.to_dict('records')
+            batch_processed = processor.process_tweet_batch(tweets)
+            processed_tweets.extend(batch_processed)
+            
+        # Convert to DataFrame
+        df = pd.DataFrame(processed_tweets)
+        
+        # Save processed data
+        df.to_csv(output_file, index=False)
+        logger.info(
+            f"Processed {len(processed_tweets)} tweets. "
+            f"Results saved to {output_file}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing tweets: {str(e)}")
+        raise
 
 def main():
    """

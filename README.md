@@ -1,4 +1,4 @@
-```markdown
+
 # Cryptocurrency Price Prediction using BERT-LSTM and Sentiment Analysis
 
 A sophisticated cryptocurrency price prediction system combining BERT-based sentiment analysis of social media data with LSTM-based time series forecasting.

@@ -13,15 +13,16 @@ class SentimentAnalyzer:
    """
    Implements BERT-based sentiment analysis as described in Section III.B.1
    """
-   def __init__(self, model_name: str = 'bert-base-uncased', device: str = None):
-       self.device = device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
+   def __init__(self, config):
+       model_name = config['sentiment_analysis']['bert_model']
+       self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
        self.tokenizer = BertTokenizer.from_pretrained(model_name)
        self.model = BertModel.from_pretrained(model_name).to(self.device)
        self.sentiment_classifier = pipeline(
            "sentiment-analysis",
            model=self.model,
            tokenizer=self.tokenizer,
-           device=0 if self.device == 'cuda' else -1
+           device=0 if torch.cuda.is_available() else -1
        )
 
    def calculate_probabilities(self, text: str) -> Dict[str, float]:

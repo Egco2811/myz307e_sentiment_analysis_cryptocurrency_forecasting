@@ -4,101 +4,203 @@ import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from transformers import BertTokenizer
+import logging
+from typing import List, Dict, Optional
+from pathlib import Path
+import json
+from tqdm import tqdm
+import emoji
+import numpy as np
+from datetime import datetime
 
-# Download required NLTK data
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
+# Configure logging
+logging.basicConfig(
+   level=logging.INFO,
+   format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 class TweetPreprocessor:
-    def __init__(self):
-        self.bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        self.stop_words = set(stopwords.words('english'))
+   """
+   Implements comprehensive tweet preprocessing pipeline as described in the paper
+   """
+   def __init__(self, config: Dict):
+       self.config = config
+       self.bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+       self.stop_words = set(stopwords.words('english'))
+       
+       # Download required NLTK data
+       nltk.download('punkt', quiet=True)
+       nltk.download('stopwords', quiet=True)
+       nltk.download('wordnet', quiet=True)
+       
+       # Compile regex patterns
+       self.url_pattern = re.compile(r'http\S+|www\S+|https\S+')
+       self.username_pattern = re.compile(r'@\w+')
+       self.hashtag_pattern = re.compile(r'#(\w+)')
+       
+       # Load crypto-specific terms
+       self.crypto_terms = self._load_crypto_terms()
 
-    def clean_text(self, text):
-        """
-        Clean and preprocess tweet text according to paper specifications
-        """
-        if isinstance(text, str):
-            # Remove URLs
-            text = re.sub(r'http\S+|www\S+|https\S+', '', text)
-            
-            # Keep important crypto terms before removing special characters
-            crypto_terms = ['btc', 'eth', 'hodl', 'fomo', 'dyor', 'bullish', 'bearish']
-            text = text.lower()
-            
-            # Remove hashtags but keep the text
-            text = re.sub(r'#(\w+)', r'\1', text)
-            
-            # Remove @ mentions
-            text = re.sub(r'@\w+', '', text)
-            
-            # Remove non-alphabetic characters while preserving crypto terms
-            text = ' '.join(word if word in crypto_terms else 
-                          re.sub(r'[^a-zA-Z\s]', '', word) 
-                          for word in text.split())
-            
-            # Remove extra whitespace
-            text = re.sub(r'\s+', ' ', text).strip()
-            
-            # Remove stop words except those relevant to sentiment
-            important_words = {'not', 'no', 'nor', 'but'}
-            words = word_tokenize(text)
-            text = ' '.join([word for word in words if word not in self.stop_words or word in important_words])
-            
-            return text
-        return ""
+   def _load_crypto_terms(self) -> List[str]:
+       """
+       Load and return crypto-specific terms
+       """
+       return [
+           'btc', 'eth', 'hodl', 'fomo', 'dyor', 'bullish', 'bearish',
+           'moon', 'dump', 'pump', 'whale', 'fud', 'lambo', 'rekt',
+           'shill', 'alt', 'blockchain', 'mining', 'satoshi'
+       ]
 
-    def prepare_for_bert(self, text):
-        """
-        Prepare text for BERT model input
-        """
-        encoding = self.bert_tokenizer.encode_plus(
-            text,
-            add_special_tokens=True,
-            max_length=128,
-            padding='max_length',
-            truncation=True,
-            return_attention_mask=True,
-            return_tensors='pt'
-        )
-        return encoding
+   def clean_text(self, text: str) -> str:
+       """
+       Clean and preprocess tweet text according to paper specifications
+       """
+       if not isinstance(text, str):
+           return ""
+           
+       # Convert to lowercase
+       text = text.lower()
+       
+       # Replace emoji with text representation
+       text = emoji.demojize(text)
+       
+       # Remove URLs
+       text = self.url_pattern.sub('', text)
+       
+       # Process hashtags but keep the text
+       text = self.hashtag_pattern.sub(r'\1', text)
+       
+       # Remove usernames
+       text = self.username_pattern.sub('', text)
+       
+       # Split into words
+       words = text.split()
+       
+       # Process each word
+       processed_words = []
+       for word in words:
+           # Keep crypto terms intact
+           if word in self.crypto_terms:
+               processed_words.append(word)
+           else:
+               # Remove non-alphabetic characters
+               word = re.sub(r'[^a-zA-Z\s]', '', word)
+               if word:
+                   processed_words.append(word)
+       
+       # Join words and remove extra whitespace
+       text = ' '.join(processed_words)
+       text = re.sub(r'\s+', ' ', text).strip()
+       
+       # Remove stop words except those relevant to sentiment
+       important_words = {'not', 'no', 'nor', 'but', 'very', 'most', 'more'}
+       words = word_tokenize(text)
+       text = ' '.join([
+           word for word in words 
+           if word not in self.stop_words or word in important_words
+       ])
+       
+       return text
 
-def process_tweets_file(input_file, output_file):
-    """
-    Process entire tweets dataset
-    """
-    processor = TweetPreprocessor()
-    
-    # Read data in chunks to handle large files
-    chunk_size = 10000
-    chunks = []
-    
-    for chunk in pd.read_csv(input_file, chunksize=chunk_size):
-        # Drop unnecessary columns
-        columns_to_drop = ["user_name", "user_location", "user_description", 
-                          "user_created", "user_followers", "user_friends",
-                          "user_favourites", "user_verified", "hashtags", 
-                          "source", "is_retweet"]
-        
-        chunk = chunk.drop(columns=[col for col in columns_to_drop if col in chunk.columns])
-        
-        # Clean text
-        chunk["cleaned_text"] = chunk["text"].apply(processor.clean_text)
-        
-        # Remove empty tweets after cleaning
-        chunk = chunk[chunk["cleaned_text"].str.len() > 0]
-        
-        chunks.append(chunk)
-    
-    # Combine all chunks
-    df = pd.concat(chunks)
-    
-    # Save processed data
-    df.to_csv(output_file, index=False)
-    print(f"Processed {len(df)} tweets and saved to {output_file}")
+   def prepare_for_bert(self, text: str) -> Dict:
+       """
+       Prepare text for BERT model input
+       """
+       encoding = self.bert_tokenizer.encode_plus(
+           text,
+           add_special_tokens=True,
+           max_length=self.config['preprocessing']['max_tweet_length'],
+           padding='max_length',
+           truncation=True,
+           return_attention_mask=True,
+           return_tensors='pt'
+       )
+       return encoding
+
+   def filter_tweet(self, tweet: Dict) -> bool:
+       """
+       Check if tweet meets filtering criteria
+       """
+       if not tweet.get('text'):
+           return False
+           
+       text_length = len(tweet['text'].split())
+       
+       return (
+           text_length >= self.config['preprocessing']['min_tweet_length'] and
+           text_length <= self.config['preprocessing']['max_tweet_length'] and
+           tweet.get('lang') == self.config['preprocessing']['language']
+       )
+
+   def process_tweet_batch(self, tweets: List[Dict]) -> List[Dict]:
+       """
+       Process a batch of tweets
+       """
+       processed_tweets = []
+       
+       for tweet in tweets:
+           if self.filter_tweet(tweet):
+               cleaned_text = self.clean_text(tweet['text'])
+               if cleaned_text:
+                   processed_tweets.append({
+                       'text': tweet['text'],
+                       'cleaned_text': cleaned_text,
+                       'created_at': tweet['created_at'],
+                       'bert_encoding': self.prepare_for_bert(cleaned_text)
+                   })
+       
+       return processed_tweets
+
+def process_tweets_file(input_file: str,
+                      output_file: str,
+                      config: Dict,
+                      batch_size: int = 1000) -> None:
+   """
+   Process entire tweets dataset
+   """
+   try:
+       processor = TweetPreprocessor(config)
+       
+       # Read data in chunks
+       chunks = pd.read_csv(
+           input_file,
+           chunksize=batch_size,
+           on_bad_lines='skip'
+       )
+       
+       processed_tweets = []
+       for chunk in tqdm(chunks, desc="Processing tweets"):
+           tweets = chunk.to_dict('records')
+           batch_processed = processor.process_tweet_batch(tweets)
+           processed_tweets.extend(batch_processed)
+           
+       # Convert to DataFrame
+       df = pd.DataFrame(processed_tweets)
+       
+       # Save processed data
+       df.to_csv(output_file, index=False)
+       logger.info(
+           f"Processed {len(processed_tweets)} tweets. "
+           f"Results saved to {output_file}"
+       )
+       
+   except Exception as e:
+       logger.error(f"Error processing tweets: {str(e)}")
+       raise
+
+def main():
+   """
+   Main execution function
+   """
+   # Load configuration
+   with open('config.json', 'r') as f:
+       config = json.load(f)
+   
+   input_file = config['raw_data']['tweets_file']
+   output_file = Path(config['output_directory']) / 'processed_tweets.csv'
+   
+   process_tweets_file(input_file, output_file, config)
 
 if __name__ == "__main__":
-    input_file = "filtered_tweets.csv"
-    output_file = "processed_tweets.csv"
-    process_tweets_file(input_file, output_file)
+   main()

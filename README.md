@@ -1,166 +1,184 @@
+```markdown
 # Cryptocurrency Price Prediction using BERT-LSTM and Sentiment Analysis
 
-## Overview
-This project implements a sophisticated cryptocurrency price prediction system that combines BERT-based sentiment analysis of social media data with LSTM-based time series forecasting. The implementation follows the methodology described in our research paper, providing a complete pipeline from data preprocessing through model training to trading strategy evaluation.
+A sophisticated cryptocurrency price prediction system combining BERT-based sentiment analysis of social media data with LSTM-based time series forecasting.
 
 ## Features
-- Sentiment analysis of cryptocurrency-related tweets using BERT
-- Advanced feature engineering combining price and sentiment data
-- LSTM-based price prediction with bidirectional processing
+
+- Twitter sentiment analysis using BERT 
+- Advanced feature engineering combining price and sentiment
+- LSTM-based price prediction
 - Hyperparameter optimization using Optuna
-- Comprehensive trading strategy implementation
-- Detailed visualization and evaluation metrics
+- Real-time trading strategy implementation
+- Comprehensive visualization suite
 
 ## Installation
 
-### Requirements
+### Prerequisites
 - Python 3.8+
-- PyTorch 1.9+
-- Transformers 4.5+
-- pandas
-- numpy
-- scikit-learn
-- optuna
-- matplotlib
-- seaborn
+- CUDA-capable GPU (recommended)
+- 16GB+ RAM
 
-
-## Installation and Setup
-
-### 1. Clone Repository
-Clone the repository and navigate to the project directory:
+### Setup
 ```bash
+# Clone repository
 git clone https://github.com/yourusername/crypto-prediction.git
 cd crypto-prediction
 
-## 2.Installation dependencies:
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+venv\Scripts\activate  # Windows
 
-bashCopypip install -r requirements.txt
+# Install dependencies
+pip install -r requirements.txt
+```
 
-## 3.Download required NLTK data:
-Run the following Python commands to download required NLTK datasets:
+## Project Structure
 
-pythonCopyimport nltk
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
-
-##Project Structure
-Copycrypto-prediction/
+```
+crypto-prediction/
+├── config.json                 # Configuration parameters
 ├── data/                      # Data directory
-├── models/                    # Saved models
-├── outputs/                   # Results and visualizations
+│   ├── raw/                  
+│   │   ├── tweets.csv        # Raw Twitter data
+│   │   └── prices.csv        # Raw price data
+│   └── processed/            # Processed datasets
 ├── src/                      # Source code
-│   ├── tweets_preprocessing.py
-│   ├── tweet_labeler.py
-│   ├── csv_date_matcher.py
-│   ├── model_training.py
-│   ├── evaluation.py
-│   ├── data_visualization.py
-│   ├── feature_engineering.py
-│   ├── hyperparameter_tuning.py
-│   ├── trading_strategy.py
-│   └── run_script.py
-├── config.json               # Configuration file
-├── requirements.txt
+│   ├── tweets_preprocessing.py # Tweet cleaning and preprocessing
+│   ├── tweet_labeler.py       # BERT sentiment analysis
+│   ├── csv_date_matcher.py    # Data alignment and merging
+│   ├── feature_engineering.py # Feature creation
+│   ├── model_training.py      # BERT-LSTM model implementation
+│   ├── hyperparameter_tuning.py # Optimization framework
+│   ├── evaluation.py         # Model and strategy evaluation
+│   ├── data_visualization.py # Result visualization
+│   ├── trading_strategy.py   # Trading implementation
+│   └── run_script.py         # Pipeline orchestration
 └── README.md
+```
 
-##Usage
-Configuration
-Before running the pipeline, configure the parameters in config.json:
-jsonCopy{
-    "output_directory": "outputs",
-    "raw_data": {
-        "tweets_file": "data/raw/tweets.csv",
-        "price_file": "data/raw/prices.csv"
-    },
-    "model": {
-        "bert_model": "bert-base-uncased",
-        "sequence_length": 10,
-        "batch_size": 32
-    },
-    "trading": {
-        "initial_capital": 100000,
-        "risk_per_trade": 0.02
-    }
-}
-Running the Pipeline
-Execute the complete pipeline:
-bashCopypython src/run_script.py --config config.json
-For individual components:
-bashCopy# Preprocess tweets
-python src/tweets_preprocessing.py
+## Component Details
 
-# Train model
-python src/model_training.py
+1. **tweets_preprocessing.py**
+   - Cleans and normalizes tweet text
+   - Handles emojis, URLs, and crypto-specific terms
+   - Implements batched processing for large datasets
 
-# Run trading strategy
-python src/trading_strategy.py
-Component Descriptions
-1. Data Preprocessing
+2. **tweet_labeler.py**
+   - BERT-based sentiment analysis
+   - Three-class classification (Positive/Neutral/Negative)
+   - Sentiment score calculation
 
-Cleans and normalizes tweet text
-Removes duplicates and irrelevant content
-Aligns tweet timestamps with price data
+3. **csv_date_matcher.py**
+   - Temporal alignment of price and sentiment data
+   - Missing value handling
+   - Data normalization
 
-2. Sentiment Analysis
+4. **feature_engineering.py**
+   - Technical indicators calculation
+   - Sentiment feature engineering
+   - Price-sentiment interaction features
 
-Uses BERT for tweet sentiment classification
-Generates sentiment scores for each time period
-Handles multiple languages and emoji content
+5. **model_training.py**
+   - BERT-LSTM architecture implementation
+   - Custom dataset handling
+   - Training pipeline
 
-3. Feature Engineering
+6. **hyperparameter_tuning.py**
+   - Optuna-based optimization
+   - Multi-objective optimization
+   - Cross-validation implementation
 
-Creates technical indicators from price data
-Combines sentiment and price features
-Implements rolling windows and momentum indicators
+7. **evaluation.py**
+   - Model performance metrics
+   - Trading strategy evaluation
+   - Results analysis
 
-4. Model Architecture
+8. **data_visualization.py**
+   - Static and interactive visualizations
+   - Performance analysis plots
+   - Trading metrics visualization
 
-Bidirectional LSTM network
-BERT-based sentiment feature extraction
-Attention mechanism for temporal dependencies
+9. **trading_strategy.py**
+   - Real-time trading simulation
+   - Risk management implementation
+   - Performance tracking
 
-5. Trading Strategy
+10. **run_script.py**
+    - Pipeline orchestration
+    - Component integration
+    - Error handling and logging
 
-Risk management implementation
-Position sizing based on volatility
-Stop-loss and take-profit mechanisms
+## Usage
 
-Output Files
-The pipeline generates the following outputs:
+1. **Configuration**
+   Edit `config.json` to set parameters:
+   ```json
+   {
+     "raw_data": {
+       "tweets_file": "data/raw/tweets.csv",
+       "price_file": "data/raw/prices.csv"
+     },
+     ...
+   }
+   ```
 
-Processed datasets
-Trained model weights
-Performance metrics
-Trading strategy results
-Visualization plots
+2. **Data Preparation**
+   Place your data files:
+   - `data/raw/tweets.csv`: Tweet data with columns [Date, Text]
+   - `data/raw/prices.csv`: Price data with columns [Date, Open, High, Low, Close, Volume]
 
-Troubleshooting
-Common Issues
+3. **Execution**
+   ```bash
+   # Run complete pipeline
+   python src/run_script.py --config config.json
 
-CUDA Out of Memory
+   # Run individual components
+   python src/tweets_preprocessing.py  # Preprocess tweets
+   python src/tweet_labeler.py        # Sentiment analysis
+   python src/model_training.py       # Train model
+   ```
 
-CopySolution: Reduce batch size in config.json
+4. **Results**
+   Results are saved in the `outputs` directory:
+   - `processed_data/`: Processed datasets
+   - `models/`: Trained model weights
+   - `visualizations/`: Generated plots
+   - `results/`: Evaluation metrics
+   - `trading_results/`: Trading performance
 
-Missing Data Files
+## Implementation Details
 
-CopySolution: Ensure all required files are in the data/ directory
+### Sentiment Analysis
+- BERT fine-tuned on crypto tweets
+- Sentiment score calculation: `score = P(Positive) - P(Negative)`
+- Rolling sentiment features with multiple windows
 
-Training Instability
+### Price Prediction
+- Bidirectional LSTM architecture
+- Sequence length: 10 days
+- Feature set: Price technicals + Sentiment indicators
 
-CopySolution: Adjust learning rate and gradient clipping parameters
-Contributing
-Please read CONTRIBUTING.md for details on our code of conduct and the process for submitting pull requests.
-License
-This project is licensed under the MIT License - see the LICENSE file for details.
-Citation
-If you use this code in your research, please cite:
-Copy@article{your_paper,
-    title={Advanced Framework for Cryptocurrency Price Forecasting Using BERT and LSTM},
-    author={Your Name},
-    journal={Your Journal},
-    year={2024}
-}
-Contact
-For questions and feedback, please contact your.email@domain.com
+### Trading Strategy
+- Position sizing based on prediction confidence
+- Risk management with stop-loss/take-profit
+- Transaction cost consideration
+
+### Hyperparameter Optimization
+- Optimization objectives:
+  - MSE (α = 0.6)
+  - Directional Accuracy (β = 0.3)
+  - Computational Efficiency (γ = 0.1)
+
+## Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+This project is licensed under the MIT License - see [LICENSE](LICENSE) file.
+
+## Contact
+- Author: Your Name
+- Email: your.email@domain.com
+```
+

@@ -8,6 +8,9 @@ from sklearn.model_selection import TimeSeriesSplit
 import logging
 import warnings
 from tqdm import tqdm
+from typing import Dict, List, Tuple
+import json
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,37 +20,45 @@ warnings.filterwarnings('ignore')
 class CryptoDataset(Dataset):
     """
     Custom dataset class for cryptocurrency data that combines price and sentiment
-    features from our preprocessed data.
+    features as specified in Section III.A of the paper.
     """
-    def __init__(self, price_data, sentiment_data, sequence_length, tokenizer, max_length=128):
+    def __init__(self, price_data: pd.DataFrame, 
+                 sentiment_data: pd.DataFrame, 
+                 sequence_length: int,
+                 bert_tokenizer,
+                 max_length: int = 128):
         self.sequence_length = sequence_length
-        self.tokenizer = tokenizer
+        self.tokenizer = bert_tokenizer
         self.max_length = max_length
         
         # Combine price and sentiment data
         self.data = self._prepare_data(price_data, sentiment_data)
         
-    def _prepare_data(self, price_data, sentiment_data):
+    def _prepare_data(self, price_data: pd.DataFrame, 
+                     sentiment_data: pd.DataFrame) -> pd.DataFrame:
         """
         Prepare combined dataset with both price and sentiment features.
-        Implements the data alignment described in Section III.A of the paper.
+        Implements data alignment described in Section III.A.
         """
-        # Merge price and sentiment data on date
-        combined_data = pd.merge(price_data, sentiment_data, on='Date', how='inner')
+        # Merge price and sentiment data
+        combined_data = pd.merge(price_data, sentiment_data, 
+                               on='Date', how='inner')
         
         # Calculate daily returns
         combined_data['returns'] = combined_data['Close'].pct_change()
         
-        # Calculate rolling sentiment metrics as described in paper
+        # Calculate rolling sentiment metrics
         combined_data['rolling_sentiment'] = combined_data['sentiment_score'].rolling(
             window=7).mean()
         
-        # Normalize data as described in Section III.A.3
-        numerical_columns = ['Close', 'returns', 'sentiment_score', 'rolling_sentiment']
+        # Normalize data
+        numerical_columns = ['Close', 'returns', 'sentiment_score', 
+                           'rolling_sentiment']
         for column in numerical_columns:
             min_val = combined_data[column].min()
             max_val = combined_data[column].max()
-            combined_data[column] = (combined_data[column] - min_val) / (max_val - min_val)
+            combined_data[column] = (combined_data[column] - min_val) / (
+                max_val - min_val)
             
         return combined_data
     
@@ -55,7 +66,6 @@ class CryptoDataset(Dataset):
         return len(self.data) - self.sequence_length
     
     def __getitem__(self, idx):
-        # Get sequence of data
         sequence = self.data.iloc[idx:idx + self.sequence_length]
         
         # Prepare BERT input for sentiment text
@@ -68,9 +78,10 @@ class CryptoDataset(Dataset):
             return_tensors='pt'
         )
         
-        # Prepare price and sentiment features
-        numerical_features = sequence[['Close', 'returns', 'sentiment_score', 
-                                    'rolling_sentiment']].values
+        # Prepare numerical features
+        numerical_features = sequence[
+            ['Close', 'returns', 'sentiment_score', 'rolling_sentiment']
+        ].values
         
         # Prepare target (next day's return)
         target = self.data.iloc[idx + self.sequence_length]['returns']
@@ -87,7 +98,11 @@ class BertLSTM(nn.Module):
     Combined BERT-LSTM model as described in Section III.B of the paper.
     Implements the architecture that processes both text sentiment and price data.
     """
-    def __init__(self, bert_model, lstm_hidden_size=128, num_lstm_layers=3, dropout_rate=0.3):
+    def __init__(self, 
+                 bert_model: BertModel,
+                 lstm_hidden_size: int = 128,
+                 num_lstm_layers: int = 3,
+                 dropout_rate: float = 0.3):
         super(BertLSTM, self).__init__()
         
         # BERT for sentiment analysis
@@ -138,13 +153,19 @@ class ModelTrainer:
     Handles the training process for the BERT-LSTM model, implementing the training
     objective described in Section III.B.3 of the paper.
     """
-    def __init__(self, model, learning_rate=2e-5, device='cuda'):
+    def __init__(self, model: BertLSTM, config: dict, device: torch.device):
         self.model = model.to(device)
         self.device = device
-        self.optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+        self.config = config
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config['model']['learning_rate']
+        )
         self.criterion = nn.MSELoss()
+        self.early_stopping_patience = config['model']['early_stopping_patience']
         
-    def train_epoch(self, train_loader):
+    def train_epoch(self, train_loader: DataLoader) -> float:
+        """Train for one epoch."""
         self.model.train()
         total_loss = 0
         
@@ -163,16 +184,21 @@ class ModelTrainer:
             
             # Backward pass
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             
             total_loss += loss.item()
             
         return total_loss / len(train_loader)
     
-    def validate(self, val_loader):
+    def validate(self, val_loader: DataLoader) -> Tuple[float, float]:
+        """
+        Validate the model and calculate directional accuracy.
+        """
         self.model.eval()
         total_loss = 0
+        predictions = []
+        actuals = []
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validating"):
@@ -183,71 +209,118 @@ class ModelTrainer:
                 
                 outputs = self.model(input_ids, attention_mask, numerical_features)
                 loss = self.criterion(outputs, targets)
-                total_loss += loss.item()
                 
-        return total_loss / len(val_loader)
+                total_loss += loss.item()
+                predictions.extend(outputs.cpu().numpy())
+                actuals.extend(targets.cpu().numpy())
+        
+        # Calculate directional accuracy
+        pred_direction = np.sign(predictions)
+        actual_direction = np.sign(actuals)
+        directional_accuracy = np.mean(pred_direction == actual_direction)
+        
+        return total_loss / len(val_loader), directional_accuracy
+
+    def train_with_early_stopping(self, 
+                                train_loader: DataLoader,
+                                val_loader: DataLoader,
+                                num_epochs: int) -> Dict:
+        """
+        Train the model with early stopping and return training history.
+        """
+        best_val_loss = float('inf')
+        patience_counter = 0
+        training_history = {
+            'train_loss': [],
+            'val_loss': [],
+            'directional_accuracy': []
+        }
+        
+        for epoch in range(num_epochs):
+            # Training phase
+            train_loss = self.train_epoch(train_loader)
+            
+            # Validation phase
+            val_loss, directional_acc = self.validate(val_loader)
+            
+            # Update training history
+            training_history['train_loss'].append(train_loss)
+            training_history['val_loss'].append(val_loss)
+            training_history['directional_accuracy'].append(directional_acc)
+            
+            logger.info(
+                f"Epoch {epoch+1}/{num_epochs} - "
+                f"Train Loss: {train_loss:.4f} - "
+                f"Val Loss: {val_loss:.4f} - "
+                f"Directional Accuracy: {directional_acc:.4f}"
+            )
+            
+            # Early stopping check
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                self.save_model('best_model.pt')
+            else:
+                patience_counter += 1
+                
+            if patience_counter >= self.early_stopping_patience:
+                logger.info(f"Early stopping triggered at epoch {epoch+1}")
+                break
+                
+        return training_history
+    
+    def save_model(self, filepath: str):
+        """Save model state dict."""
+        torch.save(self.model.state_dict(), filepath)
+        
+    def load_model(self, filepath: str):
+        """Load model state dict."""
+        self.model.load_state_dict(torch.load(filepath))
 
 def main():
+    """Main function to demonstrate the training process."""
+    # Load configuration
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+        
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
-    
-    # Load preprocessed data
-    price_data = pd.read_csv('bitcoin.csv')
-    sentiment_data = pd.read_csv('processed_tweets.csv')
     
     # Initialize BERT tokenizer and model
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     bert_model = BertModel.from_pretrained('bert-base-uncased')
     
-    # Create dataset
-    sequence_length = 10  # As specified in paper
-    dataset = CryptoDataset(price_data, sentiment_data, sequence_length, tokenizer)
+    # Load and prepare data
+    price_data = pd.read_csv(config['raw_data']['price_file'])
+    sentiment_data = pd.read_csv(config['raw_data']['tweets_file'])
     
-    # Create time series cross-validation splits
-    tscv = TimeSeriesSplit(n_splits=5)
+    # Create datasets
+    train_dataset = CryptoDataset(
+        price_data=price_data,
+        sentiment_data=sentiment_data,
+        sequence_length=config['model']['sequence_length'],
+        bert_tokenizer=tokenizer
+    )
     
-    # Training parameters
-    batch_size = 32
-    num_epochs = 100
-    learning_rate = 2e-5
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['model']['batch_size'],
+        shuffle=True
+    )
     
-    # Initialize model
+    # Initialize model and trainer
     model = BertLSTM(bert_model)
-    trainer = ModelTrainer(model, learning_rate=learning_rate, device=device)
+    trainer = ModelTrainer(model, config, device)
     
-    # Training loop with cross-validation
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(dataset)):
-        logger.info(f"Starting fold {fold + 1}")
-        
-        # Create data loaders for this fold
-        train_loader = DataLoader(
-            torch.utils.data.Subset(dataset, train_idx),
-            batch_size=batch_size,
-            shuffle=True
-        )
-        val_loader = DataLoader(
-            torch.utils.data.Subset(dataset, val_idx),
-            batch_size=batch_size
-        )
-        
-        # Training loop
-        best_val_loss = float('inf')
-        for epoch in range(num_epochs):
-            train_loss = trainer.train_epoch(train_loader)
-            val_loss = trainer.validate(val_loader)
-            
-            logger.info(f"Epoch {epoch + 1}/{num_epochs}")
-            logger.info(f"Training Loss: {train_loss:.4f}")
-            logger.info(f"Validation Loss: {val_loss:.4f}")
-            
-            # Save best model
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                torch.save(model.state_dict(), f'best_model_fold_{fold}.pt')
-                
-            # Early stopping logic could be added here
-                
+    # Train model
+    history = trainer.train_with_early_stopping(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        num_epochs=config['model']['num_epochs']
+    )
+    
     logger.info("Training complete!")
 
 if __name__ == "__main__":

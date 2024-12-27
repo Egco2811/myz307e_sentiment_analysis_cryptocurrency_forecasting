@@ -17,6 +17,11 @@ import torch
 import pandas as pd
 import numpy as np
 
+import nltk
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
+nltk.download('wordnet')
+
 # Import our custom modules
 from tweets_preprocessing import TweetPreprocessor
 from tweet_labeler import SentimentLabeler
@@ -54,7 +59,7 @@ class PipelineExecutor:
         
         # Set device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"Using device: {device}")
+        logger.info(f"Using device: {self.device}")
 
     def _load_config(self, config_path: str) -> dict:
         """
@@ -138,10 +143,18 @@ class PipelineExecutor:
             model = BertLSTM(**best_params).to(self.device)
             # Training code here...
 
+            # Create test dataset and loader
+            test_data = CryptoDataset(engineered_data['test'])
+            test_loader = torch.utils.data.DataLoader(
+                test_data, 
+                batch_size=self.config['training']['batch_size']
+            )
+
             # 6. Model Evaluation
             logger.info("Step 6: Model Evaluation")
             evaluator = ModelEvaluator(model, self.device, test_loader)
             evaluation_results = evaluator.evaluate_model()
+            model_predictions = evaluation_results['predictions']  # Get predictions from evaluation results
 
             # 7. Trading Strategy Implementation
             logger.info("Step 7: Trading Strategy")
@@ -152,7 +165,7 @@ class PipelineExecutor:
                 prices=test_data['prices'],
                 dates=test_data['dates'],
                 predictions=model_predictions,
-                sentiment_scores=sentiment_scores
+                sentiment_scores=labeled_tweets['sentiment_scores']
             )
 
             # 8. Visualization

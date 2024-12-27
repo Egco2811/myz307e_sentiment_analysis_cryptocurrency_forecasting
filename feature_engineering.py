@@ -4,7 +4,7 @@ from typing import List, Dict, Tuple
 import logging
 from scipy import stats
 from sklearn.preprocessing import MinMaxScaler
-import talib
+import ta
 from datetime import datetime, timedelta
 import warnings
 from pathlib import Path
@@ -74,8 +74,8 @@ class CryptoFeatureEngineer:
             )
         
         # Calculate momentum indicators
-        df['rsi_14'] = talib.RSI(df['Close'].values, timeperiod=14)
-        df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(
+        df['rsi_14'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+        df['macd'], df['macd_signal'], df['macd_hist'] = ta.trend.MACD(
             df['Close'].values,
             fastperiod=12,
             slowperiod=26,
@@ -88,10 +88,16 @@ class CryptoFeatureEngineer:
             df[f'ma_ratio_{window}'] = df['Close'] / df[f'ma_{window}']
         
         # Price channels and trend features
-        df['upper_bb'], df['middle_bb'], df['lower_bb'] = talib.BBANDS(
+        df['upper_bb'], df['middle_bb'], df['lower_bb'] = ta.volatility.BollingerBands(
             df['Close'].values,
-            timeperiod=20
-        )
+            window=20
+        ).bollinger_hband(), ta.volatility.BollingerBands(
+            df['Close'].values,
+            window=20
+        ).bollinger_mavg, ta.volatility.BollingerBands(
+            df['Close'].values,
+            window=20
+        ).bollinger_lband
         df['bb_width'] = (df['upper_bb'] - df['lower_bb']) / df['middle_bb']
         
         price_features = [col for col in df.columns if col.startswith((

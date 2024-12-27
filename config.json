@@ -33,6 +33,31 @@
         "num_epochs": 100,
         "early_stopping_patience": 5
     },
+    "hyperparameter_tuning": {
+        "n_trials": 100,
+        "timeout": 86400,
+        "optimization_weights": {
+            "alpha": 0.6,
+            "beta": 0.3,
+            "gamma": 0.1
+        },
+        "search_space": {
+            "batch_size": {
+                "min": 16,
+                "max": 64,
+                "step": 8
+            },
+            "learning_rate": {
+                "min": 1e-5,
+                "max": 1e-3
+            },
+            "lstm_hidden_size": [64, 128, 256],
+            "dropout_rate": {
+                "min": 0.1,
+                "max": 0.5
+            }
+        }
+    },
     "feature_engineering": {
         "price_features": {
             "moving_averages": [7, 14, 30, 50],
@@ -63,12 +88,6 @@
             "min_position_size": 0.01
         }
     },
-    "hyperparameter_tuning": {
-        "n_trials": 100,
-        "timeout": 86400,
-        "cv_folds": 5,
-        "optimization_metric": "validation_loss"
-    },
     "evaluation": {
         "test_size": 0.2,
         "validation_size": 0.2,
@@ -77,24 +96,20 @@
             "rmse",
             "mae",
             "mape",
-            "directional_accuracy"
+            "directional_accuracy",
+            "sharpe_ratio",
+            "max_drawdown"
         ]
     },
     "visualization": {
         "plot_formats": ["png", "svg"],
         "dpi": 300,
         "style": "seaborn",
-        "generate_interactive": true
-    },
-    "logging": {
-        "level": "INFO",
-        "save_path": "logs/execution.log",
-        "rotation": "1 MB"
-    },
-    "system": {
-        "random_seed": 42,
-        "num_workers": 4,
-        "use_gpu": true,
-        "precision": "float32"
+        "generate_interactive": true,
+        "color_scheme": {
+            "price": "#1f77b4",
+            "sentiment": "#2ca02c",
+            "prediction": "#ff7f0e"
+        }
     }
 }

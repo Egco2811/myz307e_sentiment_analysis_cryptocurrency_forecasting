@@ -1,231 +1,264 @@
-import pandas as pd
-import numpy as np
+
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import seaborn as sns
-import logging
-from typing import List, Dict
-from datetime import datetime
-
-from textblob import TextBlob
+import pandas as pd
+import numpy as np
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import TimeSeriesSplit
+import matplotlib.pyplot as plt
+import seaborn as sns
+import logging
+from typing import Dict, List, Tuple
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+########################################
+# 1) Plot Optimization History
+########################################
+def plot_optimization_history(objective_values: List[float], best_values: List[float]):
+    plt.figure(figsize=(12, 6))
+    plt.plot(objective_values, 'o', color='lightblue', alpha=0.5, label='Trial Value')
+    plt.plot(best_values, 'r-', linewidth=2, label='Best Value')
+    plt.xlabel('Number of Trials')
+    plt.ylabel('Objective Value')
+    plt.title('Convergence of Hyperparameter Optimization')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig('optimization_history.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
 ########################################
-# 1) Compute Lexicon-Based Daily Sentiment
-########################################
-def compute_lexicon_sentiment(text: str) -> float:
-    """
-    Compute a basic polarity score from -1.0 (negative) to +1.0 (positive) 
-    using TextBlob's lexicon-based approach.
-    """
-    if not isinstance(text, str):
-        text = ""
-    blob = TextBlob(text)
-    return blob.sentiment.polarity
-
-def aggregate_daily_sentiment(lexicon_df: pd.DataFrame) -> pd.DataFrame:
-    
-    # 1) Calculate polarity
-    logger.info("Calculating lexicon-based sentiment for each tweet...")
-    lexicon_df['sentiment_polarity'] = lexicon_df['cleaned_text'].apply(compute_lexicon_sentiment)
-
-    # 2) Group by date (ensure 'date' is daily or you do .dt.date)
-    daily_sent = (
-        lexicon_df.groupby(lexicon_df['date'].dt.date)['sentiment_polarity']
-        .mean()
-        .reset_index()
-        .rename(columns={'sentiment_polarity': 'sentiment_score'})
-    )
-
-    # Convert date back to datetime
-    daily_sent['date'] = pd.to_datetime(daily_sent['date'])
-    logger.info(f"Aggregated daily sentiment shape: {daily_sent.shape}")
-    return daily_sent
-
-
-########################################
-# 2) Technical Indicators (Optional)
+# 2) Technical Indicators
 ########################################
 def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     
     df = df.copy()
+
+    # 1) RSI (14-day)
     delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0).rolling(window=14, min_periods=1).mean()
     loss = -delta.where(delta < 0, 0).rolling(window=14, min_periods=1).mean()
-    rs = gain / (loss + 1e-9)
+    rs = gain / (loss + 1e-9)  # Add small epsilon to avoid division by zero
     df['rsi'] = 100 - (100 / (1 + rs))
 
+    # 2) MACD
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['macd'] = exp1 - exp2
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
+    # 3) Bollinger Bands
     df['bb_middle'] = df['Close'].rolling(window=20, min_periods=1).mean()
     std = df['Close'].rolling(window=20, min_periods=1).std()
-    df['bb_upper'] = df['bb_middle'] + 2 * std
-    df['bb_lower'] = df['bb_middle'] - 2 * std
+    df['bb_upper'] = df['bb_middle'] + (std * 2)
+    df['bb_lower'] = df['bb_middle'] - (std * 2)
 
+    # 4) Volatility
     df['volatility'] = df['Close'].pct_change().rolling(window=10, min_periods=1).std()
+
+    # 5) Returns
     df['returns'] = df['Close'].pct_change()
 
+    # Forward fill leftover NaNs, then fill any remaining with 0
     df = df.ffill().fillna(0)
     return df
 
-
 ########################################
-# 3) LexiconLSTMDataset
+# 3) CryptoDataset
 ########################################
-class LexiconLSTMDataset(Dataset):
-    
-    def __init__(self, price_df: pd.DataFrame, sentiment_df: pd.DataFrame, sequence_length=10):
+class CryptoDataset(Dataset):
+    def __init__(self, price_data: pd.DataFrame, sentiment_data: pd.DataFrame, sequence_length=10):
         self.sequence_length = sequence_length
 
-        # Compute technical indicators
-        price_df = calculate_technical_indicators(price_df)
-
-        # Merge daily sentiment with price data
-        merged = pd.merge(
-            price_df, 
-            sentiment_df, 
-            left_on='Date', 
-            right_on='date',
-            how='inner'
-        ).dropna(subset=['Close','sentiment_score']).reset_index(drop=True)
-
-        # Keep track of dates for final plotting
-        self.all_dates = merged['Date'].values
-
-        # Build feature matrix
         
-        features = merged[['Close','Volume','rsi','macd','macd_signal','bb_upper',
-                           'bb_lower','volatility','returns','sentiment_score']].values
+        self.all_dates = price_data['Date'].values  # or price_data.index
 
-        # Scale these features
-        self.scaler = MinMaxScaler()
-        scaled_features = self.scaler.fit_transform(features)
+        # Initialize scalers
+        self.price_scaler = MinMaxScaler()
+        self.sentiment_scaler = MinMaxScaler()
+        self.volume_scaler = MinMaxScaler()
+        
+        # Add technical indicators
+        price_data = calculate_technical_indicators(price_data)
+        
+        # Normalize features
+        self.normalized_data = self.normalize_features(price_data, sentiment_data)
+        
+        # Create sequences (X, y) pairs
+        self.X, self.y = self._create_sequences(self.normalized_data)
 
-        # Create sequences (X,y)
-        self.X, self.y = self._create_sequences(scaled_features)
-
+    def normalize_features(self, price_data: pd.DataFrame, sentiment_data: pd.DataFrame):
+        
+        price_features = self.price_scaler.fit_transform(
+            price_data[['Close']].values.reshape(-1, 1)
+        )
+        volume = self.volume_scaler.fit_transform(
+            price_data[['Volume']].values.reshape(-1, 1)
+        )
+        sentiment = self.sentiment_scaler.fit_transform(
+            sentiment_data[['sentiment_score']].values.reshape(-1, 1)
+        )
+        
+        # Combine all features:
+        
+        technical_features = np.column_stack([
+            price_features,
+            volume,
+            price_data[['rsi', 'macd', 'macd_signal', 
+                        'bb_upper', 'bb_lower', 'volatility', 'returns']].values,
+            sentiment
+        ])
+        
+        # Check for NaNs or Infs
+        if np.isnan(technical_features).any() or np.isinf(technical_features).any():
+            logger.warning("NaN or Inf found in normalized features!")
+        
+        return technical_features
+    
     def _create_sequences(self, data: np.ndarray):
+       
         X, y = [], []
         for i in range(len(data) - self.sequence_length):
-            X.append(data[i : i+self.sequence_length])
-            
-            y.append(data[i + self.sequence_length, 0])
+            X.append(data[i:(i + self.sequence_length)])
+            y.append(data[i + self.sequence_length, 0])  # 0 => normalized close price
         return np.array(X), np.array(y)
-
+    
     def __len__(self):
         return len(self.X)
-
+    
     def __getitem__(self, idx):
         return torch.FloatTensor(self.X[idx]), torch.FloatTensor([self.y[idx]])
-
+    
     def inverse_transform_price(self, data: np.ndarray):
-        
-        if data.ndim == 1:
-            data = data.reshape(-1, 1)
-        
-        dummy = np.zeros((len(data), 10))
-        dummy[:, 0] = data[:, 0]
-        inv = self.scaler.inverse_transform(dummy)
-        return inv[:, 0]
-
-    def get_date(self, dataset_index: int):
-        
-        offset_idx = dataset_index + self.sequence_length
-        if offset_idx < len(self.all_dates):
-            return self.all_dates[offset_idx]
-        else:
-            return self.all_dates[-1]
+        # Inverse transform for the price column
+        return self.price_scaler.inverse_transform(data.reshape(-1, 1))
+    
+    def get_date(self, idx):
+       
+        return self.all_dates[idx]
 
 
 ########################################
-# 4) A Simple BiLSTM Model
+# 4) Bidirectional LSTM Model
 ########################################
-class BiLSTM(nn.Module):
-    def __init__(self, input_size=10, hidden_size=64, num_layers=2, dropout=0.3):
-        super(BiLSTM, self).__init__()
+class BidirectionalLSTM(nn.Module):
+    def __init__(self, input_size=10, hidden_size=64, num_layers=2, dropout=0.5):
+        super(BidirectionalLSTM, self).__init__()
+        
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-
+        
         self.lstm = nn.LSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0.0,
+            dropout=dropout if num_layers > 1 else 0,
             batch_first=True,
             bidirectional=True
         )
-        self.fc = nn.Linear(hidden_size*2, 1)
-
+        
+        self.fc1 = nn.Linear(hidden_size * 2, 32)  # *2 for bidirectional
+        self.dropout = nn.Dropout(dropout)
+        self.bn1 = nn.BatchNorm1d(32)
+        self.fc2 = nn.Linear(32, 1)
+        
     def forward(self, x):
         batch_size = x.size(0)
-        h0 = torch.zeros(self.num_layers*2, batch_size, self.hidden_size, device=x.device)
-        c0 = torch.zeros(self.num_layers*2, batch_size, self.hidden_size, device=x.device)
-        out, _ = self.lstm(x, (h0, c0))
+        h0 = torch.zeros(self.num_layers * 2, batch_size, self.hidden_size).to(x.device)
+        c0 = torch.zeros(self.num_layers * 2, batch_size, self.hidden_size).to(x.device)
         
-        last_out = out[:, -1, :]
-        y_hat = self.fc(last_out)
-        return y_hat
-
+        lstm_out, _ = self.lstm(x, (h0, c0))
+        
+        last_out = lstm_out[:, -1]
+        
+        x = self.fc1(last_out)
+        x = self.bn1(x)
+        x = torch.relu(x)
+        x = self.dropout(x)
+        x = self.fc2(x)
+        
+        return x
 
 ########################################
-# 5) Train Function
+# 5) Training Function (with Early Stopping)
 ########################################
 def train_model(
-    model: nn.Module,
+    model: BidirectionalLSTM,
     train_loader: DataLoader,
     val_loader: DataLoader,
     criterion,
     optimizer,
     num_epochs: int,
     device: torch.device,
-    patience: int=5
+    dropout: float = 0.5,
+    l2_lambda: float = 0.01,
+    patience: int = 10
 ):
+   
     train_losses = []
     val_losses = []
+
+    
+    model.dropout.p = dropout
+
     best_val_loss = float('inf')
     patience_counter = 0
 
     for epoch in range(num_epochs):
+        # ---------------------------
+        #      TRAIN
+        # ---------------------------
         model.train()
         epoch_train_loss = 0.0
+        
         for X, y in train_loader:
             X, y = X.to(device), y.to(device)
             optimizer.zero_grad()
-            pred = model(X)
-            loss = criterion(pred, y)
+            
+            outputs = model(X)   # shape: [batch_size, 1]
+            loss = criterion(outputs, y)
+            if torch.isnan(loss):
+                logger.warning(f"NaN loss encountered on epoch {epoch+1}")
+                break
             loss.backward()
             optimizer.step()
+            
             epoch_train_loss += loss.item() * X.size(0)
-
-        epoch_train_loss /= len(train_loader.dataset)
+        
+        # Average training loss for the epoch
+        if len(train_loader.dataset) > 0:
+            epoch_train_loss /= len(train_loader.dataset)
+        else:
+            epoch_train_loss = float('inf')
         train_losses.append(epoch_train_loss)
 
+        # ---------------------------
+        #      VALIDATION
+        # ---------------------------
         model.eval()
         epoch_val_loss = 0.0
+        
         with torch.no_grad():
             for X_val, y_val in val_loader:
                 X_val, y_val = X_val.to(device), y_val.to(device)
-                pred_val = model(X_val)
-                val_loss = criterion(pred_val, y_val)
+                val_outputs = model(X_val)
+                val_loss = criterion(val_outputs, y_val)
                 epoch_val_loss += val_loss.item() * X_val.size(0)
-
-        epoch_val_loss /= len(val_loader.dataset)
+        
+        # Average validation loss for the epoch
+        if len(val_loader.dataset) > 0:
+            epoch_val_loss /= len(val_loader.dataset)
+        else:
+            epoch_val_loss = float('inf')
         val_losses.append(epoch_val_loss)
 
         logger.info(f"[Epoch {epoch+1}/{num_epochs}] "
-                    f"TrainLoss={epoch_train_loss:.5f}, "
-                    f"ValLoss={epoch_val_loss:.5f}")
-
+                    f"Train Loss (normalized): {epoch_train_loss:.6f}, "
+                    f"Val Loss (normalized): {epoch_val_loss:.6f}")
+        
+        # Early Stopping Check
         if epoch_val_loss < best_val_loss:
             best_val_loss = epoch_val_loss
             patience_counter = 0
@@ -237,32 +270,144 @@ def train_model(
 
     return train_losses, val_losses
 
-
 ########################################
-# 6) Time-Series Cross Validation
+# 6) Directional Accuracy
 ########################################
-def time_series_cv(dataset: Dataset, k=5, batch_size=32):
+def calculate_directional_accuracy(model: BidirectionalLSTM,
+                                   dataloader: DataLoader,
+                                   device: torch.device) -> float:
+   
+    model.eval()
+    correct = 0
+    total = 0
     
+    with torch.no_grad():
+        all_outputs = []
+        all_targets = []
+        
+        for X, y in dataloader:
+            X, y = X.to(device), y.to(device)
+            pred = model(X)
+            all_outputs.append(pred.cpu().numpy())
+            all_targets.append(y.cpu().numpy())
+        
+        # Flatten or concatenate
+        all_outputs = np.concatenate(all_outputs, axis=0)
+        all_targets = np.concatenate(all_targets, axis=0)
+
+        # For directional accuracy, we need consecutive pairs
+        for i in range(len(all_outputs) - 1):
+            pred_dir = all_outputs[i+1] - all_outputs[i]
+            true_dir = all_targets[i+1] - all_targets[i]
+            if pred_dir * true_dir > 0:
+                correct += 1
+            total += 1
+
+    return correct / total if total > 0 else 0
+
+########################################
+# 7) Hyperparameter Optimization
+########################################
+def train_with_optimization(model: BidirectionalLSTM, 
+                            train_loader: DataLoader,
+                            val_loader: DataLoader,
+                            device: torch.device,
+                            num_trials: int = 5) -> Dict:
+   
+    objective_values = []
+    best_values = []
+    best_value = float('inf')
+    best_params = {}
+    
+    for trial in range(num_trials):
+        # Randomly sample hyperparameters
+        lr = np.exp(np.random.uniform(np.log(1e-5), np.log(1e-3)))
+        dropout = np.random.uniform(0.3, 0.7)
+        l2_lambda = np.exp(np.random.uniform(np.log(1e-5), np.log(1e-2)))
+        
+        # Re-initialize the model each trial
+        trial_model = BidirectionalLSTM(
+            input_size=model.lstm.input_size,
+            hidden_size=model.hidden_size,
+            num_layers=model.num_layers,
+            dropout=dropout
+        ).to(device)
+        
+        optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=l2_lambda)
+        
+        train_losses, val_losses = train_model(
+            trial_model,
+            train_loader,
+            val_loader,
+            nn.MSELoss(),
+            optimizer,
+            num_epochs=30,
+            device=device,
+            dropout=dropout,
+            l2_lambda=l2_lambda
+        )
+        
+        
+        if len(val_losses) >= 5:
+            val_loss = np.mean(val_losses[-5:])
+        else:
+            val_loss = val_losses[-1] if len(val_losses) > 0 else float('inf')
+
+        
+        direction_acc = calculate_directional_accuracy(trial_model, val_loader, device)
+
+        
+        objective = val_loss + 0.1 * (1 - direction_acc)
+        objective_values.append(objective)
+        
+        
+        if objective < best_value:
+            best_value = objective
+            best_params = {
+                'lr': lr,
+                'dropout': dropout,
+                'l2_lambda': l2_lambda
+            }
+        best_values.append(best_value)
+        
+        logger.info(
+            f"Trial {trial+1}/{num_trials} | "
+            f"lr={lr:.6f}, dropout={dropout:.3f}, l2_lambda={l2_lambda:.6f} | "
+            f"Val Loss={val_loss:.6f}, DirAcc={direction_acc:.3f}, "
+            f"Objective={objective:.6f}"
+        )
+        
+        
+        plot_optimization_history(objective_values, best_values)
+    
+    return best_params, objective_values, best_values
+
+########################################
+# 8) K-Fold Time-Series Split
+########################################
+def k_fold_cross_validation(dataset: Dataset, k=5, batch_size=32):
     tscv = TimeSeriesSplit(n_splits=k)
-    results = []
-    for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(dataset), start=1):
+    fold_results = []
+    
+    for fold, (train_idx, val_idx) in enumerate(tscv.split(dataset)):
         train_sampler = SubsetRandomSampler(train_idx)
-        val_sampler   = SubsetRandomSampler(val_idx)
-
+        val_sampler = SubsetRandomSampler(val_idx)
+        
         train_loader = DataLoader(dataset, batch_size=batch_size, sampler=train_sampler)
-        val_loader   = DataLoader(dataset, batch_size=batch_size, sampler=val_sampler)
-
-        results.append((fold_idx, train_loader, val_loader))
-    return results
-
+        val_loader = DataLoader(dataset, batch_size=batch_size, sampler=val_sampler)
+        
+        fold_results.append((train_loader, val_loader))
+    
+    return fold_results
 
 ########################################
-# 7) Plotting
+# 9) Utility: Plot Final Test Predictions vs. Actual
 ########################################
-def plot_prediction_vs_actual(dates, actuals, preds, title='Lexicon-LSTM: Prediction vs. Actual'):
-    plt.figure(figsize=(12,6))
-    plt.plot(dates, actuals, marker='o', label='Actual')
-    plt.plot(dates, preds, marker='o', label='Predicted')
+def plot_final_predictions(dates, actuals, predictions, title='Bitcoin Price Prediction vs Actual'):
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, actuals, label='Actual', marker='o')
+    plt.plot(dates, predictions, label='Predicted', marker='o')
     plt.xlabel('Date')
     plt.ylabel('Price (USD)')
     plt.title(title)
@@ -270,166 +415,200 @@ def plot_prediction_vs_actual(dates, actuals, preds, title='Lexicon-LSTM: Predic
     plt.grid(True, alpha=0.3)
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig('lexicon_lstm_prediction_plot.png', dpi=300)
+    plt.savefig('final_prediction_plot.png', dpi=300)
     plt.close()
 
-
 ########################################
-# 8) Main
+# 10) Main
 ########################################
 def main():
-    # 1) Read pre-processed tweets from 'processed_tweets.csv'
+    # Load data
+    price_data = pd.read_csv('bitcoin.csv')  
+    sentiment_data = pd.read_csv('daily_sentiment.csv')  
     
-    logger.info("Loading processed tweets from 'processed_tweets.csv'...")
-    tweets_df = pd.read_csv('processed_tweets.csv')
-    
-    tweets_df['date'] = pd.to_datetime(tweets_df['date'])
-    logger.info(f"Loaded {len(tweets_df)} tweets after cleaning.")
-
-    # 2) Compute daily lexicon-based sentiment & save
-    daily_lex_sent = aggregate_daily_sentiment(tweets_df)
-    daily_lex_sent = daily_lex_sent.sort_values('date').reset_index(drop=True)
-    daily_lex_sent.to_csv('daily_lexicon_sentiment.csv', index=False)
-    logger.info("Saved 'daily_lexicon_sentiment.csv' with daily lexicon-based sentiment scores.")
-
-    # 3) Load bitcoin data
-    logger.info("Loading 'bitcoin.csv' ...")
-    price_df = pd.read_csv('bitcoin.csv')
-    price_df['Date'] = pd.to_datetime(price_df['Date'])
-
     
     start_date = '2021-03-01'
-    end_date   = '2022-07-31'
-    mask = (price_df['Date'] >= start_date) & (price_df['Date'] <= end_date)
-    price_df = price_df[mask].copy().reset_index(drop=True)
-    logger.info(f"Price rows after filtering: {len(price_df)}")
-
-    # 4) Create LexiconLSTMDataset
-    dataset = LexiconLSTMDataset(price_df, daily_lex_sent, sequence_length=10)
+    end_date = '2022-07-31'
+    
+    price_data['Date'] = pd.to_datetime(price_data['Date'])
+    sentiment_data['date'] = pd.to_datetime(sentiment_data['date'])
+    
+    mask = (price_data['Date'] >= start_date) & (price_data['Date'] <= end_date)
+    price_data = price_data[mask]
+    
+    logger.info(f"Filtered price_data rows: {len(price_data)}")
+    logger.info(f"Full sentiment_data rows: {len(sentiment_data)}")
+    
+    # Merge price + sentiment on date
+    data = pd.merge(
+        price_data, 
+        sentiment_data[['date', 'sentiment_score']], 
+        left_on='Date', 
+        right_on='date',
+        how='inner'
+    )
+    logger.info(f"Merged rows: {len(data)}")
+    
+    if len(data) < 20:
+        logger.warning("WARNING: Very few rows after merge. Rolling indicators may be mostly NaN!")
+    
+    # Create dataset
+    dataset = CryptoDataset(data, data, sequence_length=10)
+    
+    # If dataset is too short for sequence_length=10, handle it
     if len(dataset) < 1:
-        logger.error("Not enough data to form sequences. Exiting.")
-        return
-
-    # 5) Time-series CV
-    folds = time_series_cv(dataset, k=5, batch_size=32)
-    cv_results = []
+        logger.error("Not enough data to create a single sequence. Exiting.")
+        return None, None
+    
+    # Setup device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    criterion = nn.MSELoss()
-
-    for (fold_idx, train_loader, val_loader) in folds:
-        logger.info(f"\n--- Fold {fold_idx}/{len(folds)} ---")
-        model = BiLSTM(input_size=10, hidden_size=64, num_layers=2, dropout=0.3).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
+    
+    # Cross-validation
+    folds = k_fold_cross_validation(dataset, k=5, batch_size=32)
+    cv_results = []
+    
+    for fold, (train_loader, val_loader) in enumerate(folds):
+        logger.info(f"\n--- Training Fold {fold+1} / {len(folds)} ---")
+        
+        model = BidirectionalLSTM(input_size=10).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=0.01)
+        criterion = nn.MSELoss()
+        
+        
         train_losses, val_losses = train_model(
-            model, train_loader, val_loader,
-            criterion, optimizer,
-            num_epochs=20,
+            model,
+            train_loader,
+            val_loader,
+            criterion,
+            optimizer,
+            num_epochs=30,
             device=device,
-            patience=5
+            patience=5  # shorter patience for CV
         )
-
-        fold_val_loss = val_losses[-1] if len(val_losses) else float('inf')
+        
+        final_val_loss = val_losses[-1] if len(val_losses) > 0 else float('inf')
         cv_results.append({
-            'fold': fold_idx,
             'train_losses': train_losses,
             'val_losses': val_losses,
-            'final_val_loss': fold_val_loss
+            'final_val_loss': final_val_loss
         })
+    
+    # Save cross-validation results
+    np.save('cv_results.npy', cv_results, allow_pickle=True)
 
-    # Save CV results
-    np.save('cv_results_lexicon_lstm.npy', cv_results, allow_pickle=True)
-    logger.info("Time-series CV completed. Saved to 'cv_results_lexicon_lstm.npy'.")
-
-    # 6) Final Train/Test
-    full_size = len(dataset)
-    train_size = int(0.8 * full_size)
-    val_size   = int(0.1 * full_size)
-    test_size  = full_size - (train_size + val_size)
-
+    
+    if len(folds) > 0:
+        train_loader, val_loader = folds[0]
+    else:
+        logger.error("No folds created. Possibly not enough data for TimeSeriesSplit.")
+        return None, None
+    
+    # Hyperparameter optimization on a fresh model
+    base_model = BidirectionalLSTM(input_size=10).to(device)
+    logger.info("Starting hyperparameter optimization...")
+    best_params, obj_values, best_values = train_with_optimization(
+        base_model, train_loader, val_loader, device, num_trials=5
+    )
+    logger.info(f"Best hyperparameters found: {best_params}")
+    
+    # Provide fallback if keys missing (avoid KeyError)
+    if 'dropout' not in best_params:
+        best_params['dropout'] = 0.5
+    if 'lr' not in best_params:
+        best_params['lr'] = 1e-4
+    if 'l2_lambda' not in best_params:
+        best_params['l2_lambda'] = 1e-3
+    
+    # Plot final optimization history
+    plot_optimization_history(obj_values, best_values)
+    
+    # Train final model with best hyperparameters on the full dataset
+    train_size = int(0.8 * len(dataset))
+    val_size = int(0.1 * len(dataset))
+    
     train_dataset = torch.utils.data.Subset(dataset, range(train_size))
-    val_dataset   = torch.utils.data.Subset(dataset, range(train_size, train_size+val_size))
-    test_dataset  = torch.utils.data.Subset(dataset, range(train_size+val_size, full_size))
-
-    logger.info(f"Final splits => Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
-
+    val_dataset = torch.utils.data.Subset(dataset, range(train_size, train_size + val_size))
+    test_dataset = torch.utils.data.Subset(dataset, range(train_size + val_size, len(dataset)))
+    
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-    val_loader   = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader  = DataLoader(test_dataset, batch_size=1,  shuffle=False)
-
-    final_model = BiLSTM(input_size=10, hidden_size=64, num_layers=2, dropout=0.3).to(device)
-    final_optimizer = torch.optim.Adam(final_model.parameters(), lr=1e-4)
-
-    logger.info("Training final Lexicon-LSTM on (train+val) portion...")
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    
+    final_model = BidirectionalLSTM(
+        input_size=10,
+        hidden_size=64,
+        dropout=best_params['dropout']
+    ).to(device)
+    
+    criterion = nn.MSELoss()
+    final_optimizer = torch.optim.Adam(
+        final_model.parameters(),
+        lr=best_params['lr'],
+        weight_decay=best_params['l2_lambda']
+    )
+    
+    logger.info("Training final model on the full dataset (normalized scale)...")
     train_losses, val_losses = train_model(
-        final_model, train_loader, val_loader,
-        criterion, final_optimizer,
+        final_model,
+        train_loader,
+        val_loader,
+        criterion,
+        final_optimizer,
         num_epochs=30,
         device=device,
-        patience=5
+        dropout=best_params['dropout'],
+        l2_lambda=best_params['l2_lambda'],
+        patience=10
     )
-
-    # Plot training history
-    plt.figure(figsize=(12,6))
-    plt.subplot(2,1,1)
-    plt.plot(train_losses, label='Train Loss (scaled)')
-    plt.plot(val_losses, label='Val Loss (scaled)')
-    plt.title('Lexicon-LSTM Training History')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-
-    # 7) Evaluate on Test Set
+    
+    # Evaluate on Test set
     final_model.eval()
-    preds_list = []
-    actuals_list = []
-    dates_list = []
-
+    predictions = []
+    actuals = []
+    test_dates = []  
+    
     with torch.no_grad():
         for i, (X, y) in enumerate(test_loader):
             X, y = X.to(device), y.to(device)
-            pred = final_model(X)
-            preds_list.append(pred.item())
-            actuals_list.append(y.item())
-
-            global_idx = train_size + val_size + i
-            date_val = dataset.get_date(global_idx)
-            dates_list.append(date_val)
-
-    preds_arr = np.array(preds_list)
-    actuals_arr = np.array(actuals_list)
-
-    # Inverse transform to original scale
-    inv_preds = dataset.inverse_transform_price(preds_arr)
-    inv_actuals = dataset.inverse_transform_price(actuals_arr)
-
-    mse = np.mean((inv_preds - inv_actuals)**2) if len(inv_preds) else float('inf')
-    rmse = np.sqrt(mse)
-    if np.any(inv_actuals == 0):
+            outputs = final_model(X)
+            predictions.extend(outputs.cpu().numpy())
+            actuals.extend(y.cpu().numpy())
+            
+            
+    
+    predictions_arr = np.array(predictions).flatten()  # shape [N]
+    actuals_arr = np.array(actuals).flatten()
+    
+    # Inverse transform from normalized back to USD scale
+    predictions_inv = dataset.inverse_transform_price(predictions_arr)
+    actuals_inv = dataset.inverse_transform_price(actuals_arr)
+    
+    
+    test_indices = range(train_size + val_size, len(dataset))
+    
+    test_dates_list = []
+    for idx in test_indices:
+        
+        actual_idx_for_label = idx + dataset.sequence_length
+        if actual_idx_for_label < len(dataset.all_dates):
+            test_dates_list.append(dataset.get_date(actual_idx_for_label))
+        else:
+            test_dates_list.append(dataset.get_date(len(dataset.all_dates)-1))
+    
+    
+    test_dates_list = test_dates_list[:len(predictions_inv)]
+    
+    # Calculate final metrics in the real (USD) scale
+    mse = np.mean((predictions_inv - actuals_inv) ** 2) if len(predictions_inv) > 0 else float('inf')
+    rmse = np.sqrt(mse) if mse != float('inf') else float('inf')
+    if np.any(actuals_inv == 0):
         mape = float('inf')
     else:
-        mape = np.mean(np.abs((inv_preds - inv_actuals) / inv_actuals)) * 100
-
-    plt.subplot(2,1,2)
-    plt.plot(inv_actuals, marker='o', label='Actual (Test)')
-    plt.plot(inv_preds, marker='o', label='Predicted (Test)')
-    plt.title('Lexicon-LSTM: Test Prediction (Original Scale)')
-    plt.xlabel('Sample Index (Test Set)')
-    plt.ylabel('Price (USD)')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig('lexicon_lstm_training_history.png', dpi=300)
-    plt.close()
-
-    # Final date-based plot
-    plot_prediction_vs_actual(dates_list, inv_actuals, inv_preds,
-                              title='Lexicon-LSTM: Prediction vs Actual (Test)')
-
-    logger.info(f"[Lexicon-LSTM Final Test Metrics]: MSE={mse:.2f}, RMSE={rmse:.2f}, MAPE={mape:.2f}%")
-
-    final_results = {
-        'predictions': inv_preds,
-        'actuals': inv_actuals,
+        mape = np.mean(np.abs((actuals_inv - predictions_inv) / actuals_inv)) * 100
+    
+    results = {
+        'predictions': predictions_inv,
+        'actuals': actuals_inv,
         'metrics': {
             'mse': float(mse),
             'rmse': float(rmse),
@@ -437,9 +616,44 @@ def main():
         },
         'cv_results': cv_results
     }
-    np.save('final_results_lexicon_lstm.npy', final_results, allow_pickle=True)
-    logger.info("Saved 'final_results_lexicon_lstm.npy' for comparison with BERT+LSTM.")
+    
+    np.save('final_results.npy', results, allow_pickle=True)
+    
+    # Plot training/validation history
+    plt.figure(figsize=(15, 10))
+    
+    plt.subplot(2, 1, 1)
+    plt.plot(train_losses, label='Training Loss (normalized)')
+    plt.plot(val_losses, label='Validation Loss (normalized)')
+    plt.title('Training History (normalized scale)')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    plt.subplot(2, 1, 2)
+    if len(actuals_inv) > 0:
+        plt.plot(actuals_inv, label='Actual (test set)', marker='o')
+    if len(predictions_inv) > 0:
+        plt.plot(predictions_inv, label='Predicted (test set)', marker='o')
+    plt.title('Bitcoin Price Prediction (Test Set) - Original Scale')
+    plt.xlabel('Sample Index (Test Set)')
+    plt.ylabel('Price (USD)')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig('training_results.png')
+    plt.close()
+    
+    
+    plot_final_predictions(test_dates_list, actuals_inv, predictions_inv,
+                           title='Bitcoin Price Prediction vs Actual (Test Set)')
 
+    logger.info(f'\n[Final Test Metrics on Real Price Scale]:')
+    logger.info(f'MSE: {mse:.2f}')
+    logger.info(f'RMSE: {rmse:.2f}')
+    logger.info(f'MAPE: {mape:.2f}%')
+    
+    return final_model, results
 
 if __name__ == "__main__":
-    main()
+    model, results = main()
